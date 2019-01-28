@@ -53,8 +53,8 @@ def main(argv):
     init_logging(args.enable_debug)
     config = Config.from_args(args)
     workspace = Workspace.from_config(config)
-    ramsay = Ramsay(workspace, config.synthetic_imports, config.synthetic_dependencies,
-            config.synthetic_data_dependencies, config.pattern_deps, config.post_sections, config.allow_scoped_imports,
+    ramsay = Ramsay(workspace, config.manual_imports, config.manual_dependencies,
+            config.manual_data_dependencies, config.pattern_deps, config.post_sections, config.allow_scoped_imports,
             config.generate_library_targets, config.generate_test_targets, config.generate_shared_library)
     build_file_contents = ramsay.files(args.files)
     try:
@@ -110,13 +110,13 @@ class Ramsay:
 
     _logger = logging.getLogger(__name__)
 
-    def __init__(self, workspace, synthetic_imports, synthetic_dependencies, synthetic_data_dependencies, pattern_deps,
+    def __init__(self, workspace, manual_imports, manual_dependencies, manual_data_dependencies, pattern_deps,
             post_sections, allow_scoped_imports, generate_library_targets, generate_test_targets,
             generate_shared_library):
         self.workspace = workspace
-        self.synthetic_imports = synthetic_imports
-        self.synthetic_dependencies = synthetic_dependencies
-        self.synthetic_data_dependencies = synthetic_data_dependencies
+        self.manual_imports = manual_imports
+        self.manual_dependencies = manual_dependencies
+        self.manual_data_dependencies = manual_data_dependencies
         self.pattern_deps = pattern_deps
         self.post_sections = post_sections
         self.allow_scoped_imports = allow_scoped_imports
@@ -202,25 +202,25 @@ class Ramsay:
 
     def _synthesize_imports(self, imports_sourcemap):
         # type: (dict) -> dict
-        synthetic_imports_sourcemap = {}
+        manual_imports_sourcemap = {}
         for filepath, resolved_imports in imports_sourcemap.iteritems():
-            synthetic_imports = resolved_imports[:]
-            for module in self.synthetic_imports.get(filepath, []):
-                synthetic_import = ImportStatement.synthesize(filepath, module)
-                resolved_synthetic_import = synthetic_import.resolve(self.workspace)
-                synthetic_imports.append(resolved_synthetic_import)
-            synthetic_imports_sourcemap[filepath] = synthetic_imports
-        return synthetic_imports_sourcemap
+            manual_imports = resolved_imports[:]
+            for module in self.manual_imports.get(filepath, []):
+                manual_import = ImportStatement.synthesize(filepath, module)
+                resolved_manual_import = manual_import.resolve(self.workspace)
+                manual_imports.append(resolved_manual_import)
+            manual_imports_sourcemap[filepath] = manual_imports
+        return manual_imports_sourcemap
 
     def _synthesize_dependencies(self, imports_sourcemap):
         # type: (dict) -> dict
-        synthetic_dependencies_sourcemap = {}
+        manual_dependencies_sourcemap = {}
         for filepath, resolved_imports in imports_sourcemap.iteritems():
-            synthetic_dependencies = resolved_imports[:]
-            for bazel_path in self.synthetic_dependencies.get(filepath, []):
-                synthetic_dependencies.append(ResolvedImport.make_synthetic_import(filepath, bazel_path))
-            synthetic_dependencies_sourcemap[filepath] = synthetic_dependencies
-        return synthetic_dependencies_sourcemap
+            manual_dependencies = resolved_imports[:]
+            for bazel_path in self.manual_dependencies.get(filepath, []):
+                manual_dependencies.append(ResolvedImport.make_manual_import(filepath, bazel_path))
+            manual_dependencies_sourcemap[filepath] = manual_dependencies
+        return manual_dependencies_sourcemap
 
     def _apply_pattern_deps(self, imports_sourcemap):
         # type: (dict) -> dict
@@ -231,12 +231,12 @@ class Ramsay:
             for regexp, pattern_deps in self.pattern_deps.iteritems():
                 if patterns[regexp].match(filepath) is None:
                     continue
-                for module in pattern_deps.get("synthetic_imports", []):
-                    synthetic_import = ImportStatement.synthesize(filepath, module)
-                    resolved_synthetic_import = synthetic_import.resolve(self.workspace)
-                    pattern_deps_imports.append(resolved_synthetic_import)
-                for bazel_path in pattern_deps.get("synthetic_dependencies", []):
-                    pattern_deps_imports.append(ResolvedImport.make_synthetic_import(filepath, bazel_path))
+                for module in pattern_deps.get("manual_imports", []):
+                    manual_import = ImportStatement.synthesize(filepath, module)
+                    resolved_manual_import = manual_import.resolve(self.workspace)
+                    pattern_deps_imports.append(resolved_manual_import)
+                for bazel_path in pattern_deps.get("manual_dependencies", []):
+                    pattern_deps_imports.append(ResolvedImport.make_manual_import(filepath, bazel_path))
             pattern_deps_sourcemap[filepath] = pattern_deps_imports
         return pattern_deps_sourcemap
 
@@ -253,7 +253,7 @@ class Ramsay:
             deps = list(deps)
             deps.sort()
             data = set()
-            for bazel_path in self.synthetic_data_dependencies.get(filepath, []):
+            for bazel_path in self.manual_data_dependencies.get(filepath, []):
                 data.add(bazel_path)
             data = list(data)
             data.sort()
@@ -276,7 +276,7 @@ class Ramsay:
             deps = list(deps)
             deps.sort()
             data = set()
-            for bazel_path in self.synthetic_data_dependencies.get(filepath, []):
+            for bazel_path in self.manual_data_dependencies.get(filepath, []):
                 data.add(bazel_path)
             data = list(data)
             data.sort()
@@ -485,9 +485,9 @@ class Config:
         "workspace_dir": None,
         "module_aliases": {},
         "ignored_modules": [],
-        "synthetic_imports": {},
-        "synthetic_dependencies": {},
-        "synthetic_data_dependencies": {},
+        "manual_imports": {},
+        "manual_dependencies": {},
+        "manual_data_dependencies": {},
         "pattern_deps": {},
         "post_sections": [],
         "third_party_modules": [],
@@ -500,15 +500,15 @@ class Config:
 
     _logger = logging.getLogger(__name__)
 
-    def __init__(self, workspace_dir, module_aliases, ignored_modules, synthetic_imports, synthetic_dependencies,
-            synthetic_data_dependencies, pattern_deps, post_sections, third_party_modules, allow_scoped_imports,
+    def __init__(self, workspace_dir, module_aliases, ignored_modules, manual_imports, manual_dependencies,
+            manual_data_dependencies, pattern_deps, post_sections, third_party_modules, allow_scoped_imports,
             generate_library_targets, generate_test_targets, generate_shared_library, enable_debug):
         self.workspace_dir = workspace_dir
         self.module_aliases = module_aliases
         self.ignored_modules = ignored_modules
-        self.synthetic_imports = synthetic_imports
-        self.synthetic_dependencies = synthetic_dependencies
-        self.synthetic_data_dependencies = synthetic_data_dependencies
+        self.manual_imports = manual_imports
+        self.manual_dependencies = manual_dependencies
+        self.manual_data_dependencies = manual_data_dependencies
         self.pattern_deps = pattern_deps
         self.post_sections = post_sections
         self.third_party_modules = third_party_modules
@@ -550,9 +550,9 @@ class Config:
                 cascaded_config["workspace_dir"],
                 cascaded_config["module_aliases"],
                 cascaded_config["ignored_modules"],
-                cascaded_config["synthetic_imports"],
-                cascaded_config["synthetic_dependencies"],
-                cascaded_config["synthetic_data_dependencies"],
+                cascaded_config["manual_imports"],
+                cascaded_config["manual_dependencies"],
+                cascaded_config["manual_data_dependencies"],
                 cascaded_config["pattern_deps"],
                 cascaded_config["post_sections"],
                 cascaded_config["third_party_modules"],
@@ -567,9 +567,9 @@ class Config:
         dest["workspace_dir"] = src.get("workspace_dir", dest["workspace_dir"])
         dest["module_aliases"].update(src.get("module_aliases", {}))
         dest["ignored_modules"].extend(src.get("ignored_modules", {}))
-        dest["synthetic_imports"].update(src.get("synthetic_imports", {}))
-        dest["synthetic_dependencies"].update(src.get("synthetic_dependencies", {}))
-        dest["synthetic_data_dependencies"].update(src.get("synthetic_data_dependencies", {}))
+        dest["manual_imports"].update(src.get("manual_imports", {}))
+        dest["manual_dependencies"].update(src.get("manual_dependencies", {}))
+        dest["manual_data_dependencies"].update(src.get("manual_data_dependencies", {}))
         dest["pattern_deps"].update(src.get("pattern_deps", {}))
         dest["post_sections"].extend(src.get("post_sections", []))
         dest["third_party_modules"].extend(src.get("third_party_modules", []))
@@ -754,9 +754,9 @@ class ResolvedImport:
         return ResolvedImport(filepath, module, level, name, "skipped", None)
 
     @classmethod
-    def make_synthetic_import(cls, filepath, bazel_path):
+    def make_manual_import(cls, filepath, bazel_path):
         # type: (str, str) -> ResolvedImport
-        return ResolvedImport(filepath, None, ImportStatement.TOP_LEVEL, None, "synthetic", bazel_path)
+        return ResolvedImport(filepath, None, ImportStatement.TOP_LEVEL, None, "manual", bazel_path)
 
     def __str__(self):
         return """#<ResolvedImport filepath={} module={} level={} name={} scope={} bazel_path={}>""".format(
