@@ -53,9 +53,10 @@ def main(argv):
     init_logging(args.enable_debug)
     config = Config.from_args(args)
     workspace = Workspace.from_config(config)
-    ramsay = Ramsay(workspace, config.manual_imports, config.manual_dependencies,
-            config.manual_data_dependencies, config.pattern_deps, config.post_sections, config.allow_scoped_imports,
-            config.generate_library_targets, config.generate_test_targets, config.generate_shared_library)
+    ramsay = Ramsay(workspace, config.ignored_files, config.ignored_test_files, config.manual_imports,
+            config.manual_dependencies, config.manual_data_dependencies, config.pattern_deps, config.post_sections,
+            config.allow_scoped_imports, config.generate_library_targets, config.generate_test_targets,
+            config.generate_shared_library)
     build_file_contents = ramsay.files(args.files)
     try:
         imp.find_module("yapf")
@@ -110,10 +111,12 @@ class Ramsay:
 
     _logger = logging.getLogger(__name__)
 
-    def __init__(self, workspace, manual_imports, manual_dependencies, manual_data_dependencies, pattern_deps,
-            post_sections, allow_scoped_imports, generate_library_targets, generate_test_targets,
-            generate_shared_library):
+    def __init__(self, workspace, ignored_files, ignored_test_files, manual_imports, manual_dependencies,
+            manual_data_dependencies, pattern_deps, post_sections, allow_scoped_imports, generate_library_targets,
+            generate_test_targets, generate_shared_library):
         self.workspace = workspace
+        self.ignored_files = ignored_files
+        self.ignored_test_files = ignored_test_files
         self.manual_imports = manual_imports
         self.manual_dependencies = manual_dependencies
         self.manual_data_dependencies = manual_data_dependencies
@@ -128,6 +131,7 @@ class Ramsay:
         # type: (list) -> str
 
         # read all the code ahead of processing so we don't fail during transforming on files that we can't open.
+        filepaths = self._filter_ignored_files(filepaths)
         codes = self._parse_code_files(filepaths)
 
         # we only care about import nodes.
@@ -152,6 +156,9 @@ class Ramsay:
             self._build_shared_library_target(imports_sourcemap, build_template)
         self._append_post_sections(build_template)
         return str(build_template)
+
+    def _filter_ignored_files(self, filepaths):
+        return [filepath for filepath in filepaths if filepath not in self.ignored_files]
 
     def _parse_code_files(self, filepaths):
         # type: (list) -> dict
@@ -265,6 +272,8 @@ class Ramsay:
         # type: (dict, BazelBuildTemplate) -> BazelBuildTemplate
         for filepath in sorted(imports_sourcemap):
             if not filepath.startswith(Ramsay.TEST_PREFIX):
+                continue
+            if filepath in self.ignored_test_files:
                 continue
             resolved_imports = imports_sourcemap[filepath]
             deps = set()
@@ -485,6 +494,8 @@ class Config:
         "workspace_dir": None,
         "module_aliases": {},
         "ignored_modules": [],
+        "ignored_files": [],
+        "ignored_test_files": [],
         "manual_imports": {},
         "manual_dependencies": {},
         "manual_data_dependencies": {},
@@ -500,12 +511,15 @@ class Config:
 
     _logger = logging.getLogger(__name__)
 
-    def __init__(self, workspace_dir, module_aliases, ignored_modules, manual_imports, manual_dependencies,
-            manual_data_dependencies, pattern_deps, post_sections, third_party_modules, allow_scoped_imports,
-            generate_library_targets, generate_test_targets, generate_shared_library, enable_debug):
+    def __init__(self, workspace_dir, module_aliases, ignored_modules, ignored_files, ignored_test_files,
+            manual_imports, manual_dependencies, manual_data_dependencies, pattern_deps, post_sections,
+            third_party_modules, allow_scoped_imports, generate_library_targets, generate_test_targets,
+            generate_shared_library, enable_debug):
         self.workspace_dir = workspace_dir
         self.module_aliases = module_aliases
         self.ignored_modules = ignored_modules
+        self.ignored_files = ignored_files
+        self.ignored_test_files = ignored_test_files
         self.manual_imports = manual_imports
         self.manual_dependencies = manual_dependencies
         self.manual_data_dependencies = manual_data_dependencies
@@ -538,11 +552,23 @@ class Config:
             for key in sorted(cascaded_config):
                 cls._logger.debug("  %s:%s", key, cascaded_config[key])
 
-        workingdir_ramsayrc_filepath = os.path.join(os.getcwd(), Config.FILENAME)
-        if os.path.exists(workingdir_ramsayrc_filepath):
-            workingdir_ramsayrc = json.loads(open(workingdir_ramsayrc_filepath).read())
-            cascaded_config = Config._cascade_configs(cascaded_config, workingdir_ramsayrc)
-            cls._logger.debug("with working directory configuration:")
+        dirpath_it = os.getcwd()
+        ramsayrc_filepaths = []
+
+        if not os.path.exists(os.path.join(dirpath_it, Config.FILENAME)):
+            ramsayrc_filepaths.append(('missing .ramsayrc file', Config.DEFAULT))
+            dirpath_it = os.path.realpath(os.path.join(dirpath_it, os.pardir))
+
+        while dirpath_it != cascaded_config["workspace_dir"]:
+            ramsayrc_filepath_it = os.path.join(dirpath_it, Config.FILENAME)
+            if os.path.exists(ramsayrc_filepath_it):
+                ramsayrc_filepaths.append((ramsayrc_filepath_it, json.loads(open(ramsayrc_filepath_it).read())))
+            dirpath_it = os.path.realpath(os.path.join(dirpath_it, os.pardir))
+        ramsayrc_filepaths.reverse()
+
+        for (ramsayrc_filepath, ramsayrc) in ramsayrc_filepaths:
+            cascaded_config = Config._cascade_configs(cascaded_config, ramsayrc)
+            cls._logger.debug("with cascaded configuration from %s:", ramsayrc_filepath)
             for key in sorted(cascaded_config):
                 cls._logger.debug("  %s:%s", key, cascaded_config[key])
 
@@ -550,6 +576,8 @@ class Config:
                 cascaded_config["workspace_dir"],
                 cascaded_config["module_aliases"],
                 cascaded_config["ignored_modules"],
+                cascaded_config["ignored_files"],
+                cascaded_config["ignored_test_files"],
                 cascaded_config["manual_imports"],
                 cascaded_config["manual_dependencies"],
                 cascaded_config["manual_data_dependencies"],
@@ -564,20 +592,31 @@ class Config:
 
     @classmethod
     def _cascade_configs(cls, dest, src):
-        dest["workspace_dir"] = src.get("workspace_dir", dest["workspace_dir"])
-        dest["module_aliases"].update(src.get("module_aliases", {}))
-        dest["ignored_modules"].extend(src.get("ignored_modules", {}))
-        dest["manual_imports"].update(src.get("manual_imports", {}))
-        dest["manual_dependencies"].update(src.get("manual_dependencies", {}))
-        dest["manual_data_dependencies"].update(src.get("manual_data_dependencies", {}))
-        dest["pattern_deps"].update(src.get("pattern_deps", {}))
-        dest["post_sections"].extend(src.get("post_sections", []))
-        dest["third_party_modules"].extend(src.get("third_party_modules", []))
+        # properties that are set only once
+        if not dest["workspace_dir"] and src["workspace_dir"]:
+            dest["workspace_dir"] = src["workspace_dir"]
+
+        # properties that are inherited by merging
+        dest["module_aliases"].update(src.get("module_aliases", Config.DEFAULT["module_aliases"].copy()))
+        dest["ignored_modules"].extend(src.get("ignored_modules", Config.DEFAULT["ignored_modules"][:]))
+        dest["ignored_files"].extend(src.get("ignored_files", Config.DEFAULT["ignored_files"][:]))
+        dest["ignored_test_files"].extend(src.get("ignored_test_files", Config.DEFAULT["ignored_test_files"][:]))
+        dest["pattern_deps"].update(src.get("pattern_deps", Config.DEFAULT["pattern_deps"].copy()))
+        dest["third_party_modules"].extend(src.get("third_party_modules", Config.DEFAULT["third_party_modules"][:]))
+
+        # properties that are inherited by overwriting
         dest["allow_scoped_imports"] = src.get("allow_scoped_imports", dest["allow_scoped_imports"])
         dest["generate_library_targets"] = src.get("generate_library_targets", dest["generate_library_targets"])
         dest["generate_test_targets"] = src.get("generate_test_targets", dest["generate_test_targets"])
         dest["generate_shared_library"] = src.get("generate_shared_library", dest["generate_shared_library"])
         dest["enable_debug"] = src.get("enable_debug", dest["enable_debug"])
+
+        # properties that aren't modified
+        dest["manual_imports"] = src.get("manual_imports", Config.DEFAULT["manual_imports"].copy())
+        dest["manual_dependencies"] = src.get("manual_dependencies", Config.DEFAULT["manual_dependencies"].copy())
+        dest["manual_data_dependencies"] = src.get("manual_data_dependencies", Config.DEFAULT["manual_data_dependencies"].copy())
+        dest["post_sections"] = src.get("post_sections", Config.DEFAULT["post_sections"][:])
+        
         return dest
 
     @classmethod
