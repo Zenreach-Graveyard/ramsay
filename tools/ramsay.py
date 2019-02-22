@@ -54,7 +54,8 @@ def main(argv):
     config = Config.from_args(args)
     workspace = Workspace.from_config(config)
     ramsay = Ramsay(workspace, config.ignored_files, config.ignored_test_files, config.manual_imports,
-            config.manual_dependencies, config.manual_data_dependencies, config.pattern_deps, config.post_sections,
+            config.manual_dependencies, config.manual_data_dependencies, config.manual_tags, config.manual_sizes,
+            config.manual_timeouts, config.manual_flaky, config.pattern_deps, config.post_sections,
             config.allow_scoped_imports, config.generate_library_targets, config.generate_test_targets,
             config.generate_shared_library)
     build_file_contents = ramsay.files(args.files)
@@ -112,14 +113,19 @@ class Ramsay:
     _logger = logging.getLogger(__name__)
 
     def __init__(self, workspace, ignored_files, ignored_test_files, manual_imports, manual_dependencies,
-            manual_data_dependencies, pattern_deps, post_sections, allow_scoped_imports, generate_library_targets,
-            generate_test_targets, generate_shared_library):
+            manual_data_dependencies, manual_tags, manual_sizes, manual_timeouts, manual_flaky, pattern_deps,
+            post_sections, allow_scoped_imports, generate_library_targets, generate_test_targets,
+            generate_shared_library):
         self.workspace = workspace
         self.ignored_files = ignored_files
         self.ignored_test_files = ignored_test_files
         self.manual_imports = manual_imports
         self.manual_dependencies = manual_dependencies
         self.manual_data_dependencies = manual_data_dependencies
+        self.manual_tags = manual_tags
+        self.manual_sizes = manual_sizes
+        self.manual_timeouts = manual_timeouts
+        self.manual_flaky = manual_flaky
         self.pattern_deps = pattern_deps
         self.post_sections = post_sections
         self.allow_scoped_imports = allow_scoped_imports
@@ -264,8 +270,13 @@ class Ramsay:
                 data.add(bazel_path)
             data = list(data)
             data.sort()
+            tags = set()
+            for bazel_tag in self.manual_tags.get(filepath, []):
+                tags.add(bazel_tag)
+            tags = list(tags)
+            tags.sort()
             build_template.add_load_stmt(Ramsay.RULESET, Ramsay.LIBRARY_TARGET)
-            build_template.add_library(name=to_safe_target_name(filepath), srcs=[filepath], deps=deps, data=data)
+            build_template.add_library(name=to_safe_target_name(filepath), srcs=[filepath], deps=deps, data=data, tags=tags)
         return build_template
 
     def _build_test_targets(self, imports_sourcemap, build_template):
@@ -289,8 +300,21 @@ class Ramsay:
                 data.add(bazel_path)
             data = list(data)
             data.sort()
+            tags = set()
+            for bazel_tag in self.manual_tags.get(filepath, []):
+                tags.add(bazel_tag)
+            tags = list(tags)
+            tags.sort()
             build_template.add_load_stmt(Ramsay.RULESET, Ramsay.TEST_TARGET)
-            build_template.add_test(name=to_safe_target_name(Ramsay.TEST_PREFIX + filepath), srcs=[filepath], deps=deps, data=data)
+            build_template.add_test(
+                    name=to_safe_target_name(Ramsay.TEST_PREFIX + filepath),
+                    srcs=[filepath],
+                    deps=deps,
+                    data=data,
+                    tags=tags,
+                    size=self.manual_sizes.get(filepath, None),
+                    timeout=self.manual_timeouts.get(filepath, None),
+                    flaky=self.manual_flaky.get(filepath, False))
         return build_template
 
     def _build_shared_library_target(self, imports_sourcemap, build_template):
@@ -499,6 +523,10 @@ class Config:
         "manual_imports": {},
         "manual_dependencies": {},
         "manual_data_dependencies": {},
+        "manual_tags": {},
+        "manual_sizes": {},
+        "manual_timeouts": {},
+        "manual_flaky": {},
         "pattern_deps": {},
         "post_sections": [],
         "third_party_modules": [],
@@ -512,9 +540,9 @@ class Config:
     _logger = logging.getLogger(__name__)
 
     def __init__(self, workspace_dir, module_aliases, ignored_modules, ignored_files, ignored_test_files,
-            manual_imports, manual_dependencies, manual_data_dependencies, pattern_deps, post_sections,
-            third_party_modules, allow_scoped_imports, generate_library_targets, generate_test_targets,
-            generate_shared_library, enable_debug):
+            manual_imports, manual_dependencies, manual_data_dependencies, manual_tags, manual_sizes, manual_timeouts,
+            manual_flaky, pattern_deps, post_sections, third_party_modules, allow_scoped_imports,
+            generate_library_targets, generate_test_targets, generate_shared_library, enable_debug):
         self.workspace_dir = workspace_dir
         self.module_aliases = module_aliases
         self.ignored_modules = ignored_modules
@@ -523,6 +551,10 @@ class Config:
         self.manual_imports = manual_imports
         self.manual_dependencies = manual_dependencies
         self.manual_data_dependencies = manual_data_dependencies
+        self.manual_tags = manual_tags
+        self.manual_sizes = manual_sizes
+        self.manual_timeouts = manual_timeouts
+        self.manual_flaky = manual_flaky
         self.pattern_deps = pattern_deps
         self.post_sections = post_sections
         self.third_party_modules = third_party_modules
@@ -581,6 +613,10 @@ class Config:
                 cascaded_config["manual_imports"],
                 cascaded_config["manual_dependencies"],
                 cascaded_config["manual_data_dependencies"],
+                cascaded_config["manual_tags"],
+                cascaded_config["manual_sizes"],
+                cascaded_config["manual_timeouts"],
+                cascaded_config["manual_flaky"],
                 cascaded_config["pattern_deps"],
                 cascaded_config["post_sections"],
                 cascaded_config["third_party_modules"],
@@ -615,6 +651,10 @@ class Config:
         dest["manual_imports"] = src.get("manual_imports", Config.DEFAULT["manual_imports"].copy())
         dest["manual_dependencies"] = src.get("manual_dependencies", Config.DEFAULT["manual_dependencies"].copy())
         dest["manual_data_dependencies"] = src.get("manual_data_dependencies", Config.DEFAULT["manual_data_dependencies"].copy())
+        dest["manual_tags"] = src.get("manual_tags", Config.DEFAULT["manual_tags"].copy())
+        dest["manual_sizes"] = src.get("manual_sizes", Config.DEFAULT["manual_sizes"].copy())
+        dest["manual_timeouts"] = src.get("manual_timeouts", Config.DEFAULT["manual_timeouts"].copy())
+        dest["manual_flaky"] = src.get("manual_flaky", Config.DEFAULT["manual_flaky"].copy())
         dest["post_sections"] = src.get("post_sections", Config.DEFAULT["post_sections"][:])
         
         return dest
@@ -825,19 +865,19 @@ class BazelBuildTemplate:
             self.loads[module] = SkylarkLoadStatement(module)
         self.loads[module].macros.add(macro)
 
-    def add_library(self, name, srcs=[], deps=[], data=[], pythonroot="//"):
+    def add_library(self, name, srcs=[], deps=[], data=[], tags=[], pythonroot="//"):
         # type: (str, list[str], list[str], list[str], str) -> None
         """
         Adds a 'pyz_library' target to the generated BUILD file.
         """
-        self.libraries.append(PyzLibraryTarget(name, srcs, deps, data, pythonroot))
+        self.libraries.append(PyzLibraryTarget(name, srcs, deps, data, tags, pythonroot))
 
-    def add_test(self, name, srcs, deps=[], data=[], pythonroot="//", interpreter_path="python2.7"):
-        # type: (str, list[str], list[str], list[str], str, str) -> None
+    def add_test(self, name, srcs, deps=[], data=[], tags=[], size=None, timeout=None, flaky=False, pythonroot="//", interpreter_path="python2.7"):
+        # type: (str, list[str], list[str], list[str], list[str], str, str, bool) -> None
         """
         Adds a 'pyz_test' target to the generated BUILD file.
         """
-        self.tests.append(PyzTestTarget(name, srcs, deps, data, pythonroot, interpreter_path))
+        self.tests.append(PyzTestTarget(name, srcs, deps, data, tags, size, timeout, flaky, pythonroot, interpreter_path))
 
     def add_post_section(self, contents):
         # type: (str) -> None
@@ -878,19 +918,48 @@ class BazelBuildTemplate:
 pyz_library(
     name = {{ library.name|tojson }},
     srcs = {{ library.srcs|tojson }},
+{% if library.deps %}
     deps = {{ library.deps|tojson }},
+{% endif %}
+{% if library.data %}
     data = {{ library.data|tojson }},
+{% endif %}
+{% if library.tags %}
+    tags = {{ library.tags|tojson }},
+{% endif %}
+{% if library.pythonroot %}
     pythonroot = {{ library.pythonroot|tojson }},
+{% endif %}
 )
 """,
             "pyz_test": """\
 pyz_test(
     name = {{ test.name|tojson }},
     srcs = {{ test.srcs|tojson }},
+{% if test.deps %}
     deps = {{ test.deps|tojson }},
+{% endif %}
+{% if test.data %}
     data = {{ test.data|tojson }},
+{% endif %}
+{% if test.tags %}
+    tags = {{ test.tags|tojson }},
+{% endif %}
+{% if test.size %}
+    size = {{ test.size|tojson }},
+{% endif %}
+{% if test.timeout %}
+    timeout = {{ test.timeout|tojson }},
+{% endif %}
+{% if test.flaky %}
+    flaky = True,
+{% endif %}
+{% if test.pythonroot %}
     pythonroot = {{ test.pythonroot|tojson }},
+{% endif %}
+{% if test.interpreter_path %}
     interpreter_path = {{ test.interpreter_path|tojson }},
+{% endif %}
 )
 """
         })
@@ -912,20 +981,25 @@ class SkylarkLoadStatement:
 
 
 class PyzLibraryTarget:
-    def __init__(self, name, srcs, deps, data, pythonroot):
+    def __init__(self, name, srcs, deps, data, tags, pythonroot):
         self.name = name
         self.srcs = srcs
         self.deps = deps
         self.data = data
+        self.tags = tags
         self.pythonroot = pythonroot
 
 
 class PyzTestTarget:
-    def __init__(self, name, srcs, deps, data, pythonroot, interpreter_path):
+    def __init__(self, name, srcs, deps, data, tags, size, timeout, flaky, pythonroot, interpreter_path):
         self.name = name
         self.srcs = srcs
         self.deps = deps
         self.data = data
+        self.tags = tags
+        self.size = size
+        self.timeout = timeout
+        self.flaky = flaky
         self.pythonroot = pythonroot
         self.interpreter_path = interpreter_path
 
