@@ -11,7 +11,7 @@ $ python2.7 -m pip install -r requirements.txt
 
 ### Usage
 ```bash
-$ ln -s ramsay/ramsay.py ~/bin/ramsay
+$ ln -s $(pwd -P)/ramsay/ramsay.py ~/bin/ramsay
 $ export PATH="$PATH:~/bin"  # if ~/bin isn't already in your path
 $ cd <directory with .py files>
 $ ramsay *.py > BUILD.bazel
