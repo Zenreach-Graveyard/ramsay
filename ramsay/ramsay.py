@@ -10,6 +10,7 @@ import os
 import re
 import subprocess
 import sys
+from yapf.yapflib.yapf_api import FormatCode
 
 """
 Ramsay is the Bazel BUILD file generator for python.
@@ -59,12 +60,7 @@ def main(argv):
             config.allow_scoped_imports, config.generate_library_targets, config.generate_test_targets,
             config.generate_shared_library)
     build_file_contents = ramsay.files(args.files)
-    try:
-        imp.find_module("yapf")
-        from yapf.yapflib.yapf_api import FormatCode
-        build_file_contents, changed = FormatCode(build_file_contents)  # defaults to pep8
-    except ImportError:
-        pass
+    build_file_contents, changed = FormatCode(build_file_contents)  # defaults to pep8
     print(build_file_contents)
 
 
