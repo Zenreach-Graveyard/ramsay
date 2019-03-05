@@ -6,7 +6,7 @@ Ramsay is a Bazel BUILD file generator for Python 2/3 using the [`pyz_rules`](ht
 ```bash
 $ python2.7 -m virtualenv env
 $ . env/bin/activate
-$ python2.7 -m pip install -r requirements.txt
+$ python2.7 -m pip install --user -r requirements.txt
 ```
 
 ### Usage

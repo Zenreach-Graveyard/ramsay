@@ -3,13 +3,13 @@ import argparse
 import ast
 import imp
 import jinja2
-import json
 import logging
 import operator
 import os
 import re
 import subprocess
 import sys
+from ruamel.yaml import YAML
 from yapf.yapflib.yapf_api import FormatCode
 
 """
@@ -47,6 +47,7 @@ SYSTEM_MODULES = [
     "user", "UserDict", "UserList", "UserString", "uu", "uuid", "videoreader", "W", "warnings", "wave", "weakref",
     "webbrowser", "whichdb", "winsound", "wsgiref", "xdrlib", "xml", "xmlrpclib", "zipfile", "zipimport", "zlib"]
 
+yaml = YAML(typ="safe")
 
 def main(argv):
     # type: (list) -> None
@@ -56,7 +57,7 @@ def main(argv):
     workspace = Workspace.from_config(config)
     ramsay = Ramsay(workspace, config.ignored_files, config.ignored_test_files, config.manual_imports,
             config.manual_dependencies, config.manual_data_dependencies, config.manual_tags, config.manual_sizes,
-            config.manual_timeouts, config.manual_flaky, config.pattern_deps, config.post_sections,
+            config.manual_timeouts, config.manual_flaky, config.pattern_deps, config.header, config.footer,
             config.allow_scoped_imports, config.generate_library_targets, config.generate_test_targets,
             config.generate_shared_library)
     build_file_contents = ramsay.files(args.files)
@@ -109,9 +110,8 @@ class Ramsay:
     _logger = logging.getLogger(__name__)
 
     def __init__(self, workspace, ignored_files, ignored_test_files, manual_imports, manual_dependencies,
-            manual_data_dependencies, manual_tags, manual_sizes, manual_timeouts, manual_flaky, pattern_deps,
-            post_sections, allow_scoped_imports, generate_library_targets, generate_test_targets,
-            generate_shared_library):
+            manual_data_dependencies, manual_tags, manual_sizes, manual_timeouts, manual_flaky, pattern_deps, header,
+            footer, allow_scoped_imports, generate_library_targets, generate_test_targets, generate_shared_library):
         self.workspace = workspace
         self.ignored_files = ignored_files
         self.ignored_test_files = ignored_test_files
@@ -123,7 +123,8 @@ class Ramsay:
         self.manual_timeouts = manual_timeouts
         self.manual_flaky = manual_flaky
         self.pattern_deps = pattern_deps
-        self.post_sections = post_sections
+        self.header = header
+        self.footer = footer
         self.allow_scoped_imports = allow_scoped_imports
         self.generate_library_targets = generate_library_targets
         self.generate_test_targets = generate_test_targets
@@ -150,13 +151,14 @@ class Ramsay:
         imports_sourcemap = self._apply_pattern_deps(imports_sourcemap)
 
         build_template = BazelBuildTemplate()
+        self._append_header(build_template)
         if self.generate_library_targets:
             self._build_library_targets(imports_sourcemap, build_template)
         if self.generate_test_targets:
             self._build_test_targets(imports_sourcemap, build_template)
         if self.generate_shared_library:
             self._build_shared_library_target(imports_sourcemap, build_template)
-        self._append_post_sections(build_template)
+        self._append_footer(build_template)
         return str(build_template)
 
     def _filter_ignored_files(self, filepaths):
@@ -206,7 +208,7 @@ class Ramsay:
             for import_stmt in import_stmts:
                 resolved_import = import_stmt.resolve(self.workspace)
                 resolved_imports_sourcemap[filepath].append(resolved_import)
-            resolved_imports_sourcemap[filepath].sort(key=operator.attrgetter('bazel_path'))
+            resolved_imports_sourcemap[filepath].sort(key=operator.attrgetter("bazel_path"))
         return resolved_imports_sourcemap
 
     def _synthesize_imports(self, imports_sourcemap):
@@ -327,10 +329,14 @@ class Ramsay:
         build_template.add_library(name="python_shared_library", deps=deps)
         return build_template
 
-    def _append_post_sections(self, build_template):
+    def _append_header(self, build_template):
         # type: (BazelBuildTemplate) -> BazelBuildTemplate
-        for post_section in self.post_sections:
-            build_template.add_post_section(post_section)
+        build_template.add_header(self.header)
+        return build_template
+
+    def _append_footer(self, build_template):
+        # type: (BazelBuildTemplate) -> BazelBuildTemplate
+        build_template.add_footer(self.footer)
         return build_template
 
 
@@ -524,7 +530,8 @@ class Config:
         "manual_timeouts": {},
         "manual_flaky": {},
         "pattern_deps": {},
-        "post_sections": [],
+        "header": None,
+        "footer": None,
         "third_party_modules": [],
         "allow_scoped_imports": False,
         "generate_library_targets": True,
@@ -537,7 +544,7 @@ class Config:
 
     def __init__(self, workspace_dir, module_aliases, ignored_modules, ignored_files, ignored_test_files,
             manual_imports, manual_dependencies, manual_data_dependencies, manual_tags, manual_sizes, manual_timeouts,
-            manual_flaky, pattern_deps, post_sections, third_party_modules, allow_scoped_imports,
+            manual_flaky, pattern_deps, header, footer, third_party_modules, allow_scoped_imports,
             generate_library_targets, generate_test_targets, generate_shared_library, enable_debug):
         self.workspace_dir = workspace_dir
         self.module_aliases = module_aliases
@@ -552,7 +559,8 @@ class Config:
         self.manual_timeouts = manual_timeouts
         self.manual_flaky = manual_flaky
         self.pattern_deps = pattern_deps
-        self.post_sections = post_sections
+        self.header = header
+        self.footer = footer
         self.third_party_modules = third_party_modules
         self.allow_scoped_imports = allow_scoped_imports
         self.generate_library_targets = generate_library_targets
@@ -574,7 +582,7 @@ class Config:
 
         workspace_ramsayrc_filepath = os.path.join(cascaded_config["workspace_dir"], Config.FILENAME)
         if os.path.exists(workspace_ramsayrc_filepath):
-            workspace_ramsayrc = json.loads(open(workspace_ramsayrc_filepath).read())
+            workspace_ramsayrc = yaml.load(open(workspace_ramsayrc_filepath))
             cascaded_config = Config._cascade_configs(cascaded_config, workspace_ramsayrc)
             cls._logger.debug("with workspace configuration:")
             for key in sorted(cascaded_config):
@@ -584,13 +592,13 @@ class Config:
         ramsayrc_filepaths = []
 
         if not os.path.exists(os.path.join(dirpath_it, Config.FILENAME)):
-            ramsayrc_filepaths.append(('missing .ramsayrc file', Config.DEFAULT))
+            ramsayrc_filepaths.append(("missing .ramsayrc file", Config.DEFAULT))
             dirpath_it = os.path.realpath(os.path.join(dirpath_it, os.pardir))
 
         while dirpath_it != cascaded_config["workspace_dir"]:
             ramsayrc_filepath_it = os.path.join(dirpath_it, Config.FILENAME)
             if os.path.exists(ramsayrc_filepath_it):
-                ramsayrc_filepaths.append((ramsayrc_filepath_it, json.loads(open(ramsayrc_filepath_it).read())))
+                ramsayrc_filepaths.append((ramsayrc_filepath_it, yaml.load(open(ramsayrc_filepath_it))))
             dirpath_it = os.path.realpath(os.path.join(dirpath_it, os.pardir))
         ramsayrc_filepaths.reverse()
 
@@ -614,7 +622,8 @@ class Config:
                 cascaded_config["manual_timeouts"],
                 cascaded_config["manual_flaky"],
                 cascaded_config["pattern_deps"],
-                cascaded_config["post_sections"],
+                cascaded_config["header"],
+                cascaded_config["footer"],
                 cascaded_config["third_party_modules"],
                 cascaded_config["allow_scoped_imports"],
                 cascaded_config["generate_library_targets"],
@@ -651,7 +660,8 @@ class Config:
         dest["manual_sizes"] = src.get("manual_sizes", Config.DEFAULT["manual_sizes"].copy())
         dest["manual_timeouts"] = src.get("manual_timeouts", Config.DEFAULT["manual_timeouts"].copy())
         dest["manual_flaky"] = src.get("manual_flaky", Config.DEFAULT["manual_flaky"].copy())
-        dest["post_sections"] = src.get("post_sections", Config.DEFAULT["post_sections"][:])
+        dest["header"] = src.get("header", Config.DEFAULT["header"])
+        dest["footer"] = src.get("footer", Config.DEFAULT["footer"])
         
         return dest
 
@@ -660,7 +670,7 @@ class Config:
         # type: () -> set
         deps = set()
         output = subprocess.check_output("bazel query //python2/third_party/... 2>/dev/null | cut -f2 -d: | sort", shell=True)
-        for line in output.split('\n'):
+        for line in output.split("\n"):
             if not line:
                 continue
             deps.add(line)
@@ -846,7 +856,8 @@ class BazelBuildTemplate:
         self.loads = {}
         self.libraries = []
         self.tests = []
-        self.post_sections = []
+        self.header = None
+        self.footer = None
 
     def add_package_stmt(self, property, value):
         # type: (str, Any) -> None
@@ -875,12 +886,19 @@ class BazelBuildTemplate:
         """
         self.tests.append(PyzTestTarget(name, srcs, deps, data, tags, size, timeout, flaky, pythonroot, interpreter_path))
 
-    def add_post_section(self, contents):
+    def add_header(self, header):
+        # type: (str) -> None
+        """
+        Adds a section of text to the beginning of the BUILD file.
+        """
+        self.header = header
+
+    def add_footer(self, footer):
         # type: (str) -> None
         """
         Adds a section of text to the end of the BUILD file.
         """
-        self.post_sections.append(contents)
+        self.footer = footer
 
     def __str__(self):
         loader = jinja2.DictLoader({
@@ -889,6 +907,10 @@ class BazelBuildTemplate:
 #   This file was auto-generated by ramsay, the BUILD file generator for Python code.
 #   DO NOT EDIT.
 #
+
+{% if this.header %}
+{{ this.header }}
+{% endif %}
 
 {% for package in this.packages %}
     {%- include "package" %}
@@ -904,9 +926,9 @@ class BazelBuildTemplate:
 
 {% endfor %}
 
-{% for post_section in this.post_sections %}
-{{ post_section }}
-{% endfor %}
+{% if this.footer %}
+{{ this.footer }}
+{% endif %}
 """,
             "package": """package({{ package.property }} = {{ package.value|tojson }})""",
             "load": """load({{ load.module|tojson }}, {{ load.macros|map('tojson')|join(", ") }})""",
