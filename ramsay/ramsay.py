@@ -59,7 +59,7 @@ def main(argv):
             config.manual_dependencies, config.manual_data_dependencies, config.manual_tags, config.manual_sizes,
             config.manual_timeouts, config.manual_flaky, config.pattern_deps, config.header, config.footer,
             config.allow_scoped_imports, config.generate_library_targets, config.generate_test_targets,
-            config.generate_shared_library)
+            config.generate_shared_library, config.generate_test_suite_target)
     build_file_contents = ramsay.files(args.files)
     build_file_contents, changed = FormatCode(build_file_contents)  # defaults to pep8
     print(build_file_contents)
@@ -111,7 +111,8 @@ class Ramsay:
 
     def __init__(self, workspace, ignored_files, ignored_test_files, manual_imports, manual_dependencies,
             manual_data_dependencies, manual_tags, manual_sizes, manual_timeouts, manual_flaky, pattern_deps, header,
-            footer, allow_scoped_imports, generate_library_targets, generate_test_targets, generate_shared_library):
+            footer, allow_scoped_imports, generate_library_targets, generate_test_targets, generate_shared_library,
+            generate_test_suite_target):
         self.workspace = workspace
         self.ignored_files = ignored_files
         self.ignored_test_files = ignored_test_files
@@ -129,6 +130,7 @@ class Ramsay:
         self.generate_library_targets = generate_library_targets
         self.generate_test_targets = generate_test_targets
         self.generate_shared_library = generate_shared_library
+        self.generate_test_suite_target = generate_test_suite_target
 
     def files(self, filepaths):
         # type: (list) -> str
@@ -158,6 +160,8 @@ class Ramsay:
             self._build_test_targets(imports_sourcemap, build_template)
         if self.generate_shared_library:
             self._build_shared_library_target(imports_sourcemap, build_template)
+        if self.generate_test_suite_target:
+            self._build_test_suite_target(imports_sourcemap, build_template)
         self._append_footer(build_template)
         return str(build_template)
 
@@ -313,6 +317,12 @@ class Ramsay:
                     size=self.manual_sizes.get(filepath, None),
                     timeout=self.manual_timeouts.get(filepath, None),
                     flaky=self.manual_flaky.get(filepath, False))
+        return build_template
+
+    def _build_test_suite_target(self, imports_sourcemap, build_template):
+        # type: (dict, BazelBuildTemplate) -> BazelBuildTemplate
+        if len(build_template.tests):
+            build_template.add_test_suite(name="python_test_suite")
         return build_template
 
     def _build_shared_library_target(self, imports_sourcemap, build_template):
@@ -537,6 +547,7 @@ class Config:
         "generate_library_targets": True,
         "generate_test_targets": True,
         "generate_shared_library": True,
+        "generate_test_suite_target": True,
         "enable_debug": False,
     }
 
@@ -545,7 +556,8 @@ class Config:
     def __init__(self, workspace_dir, module_aliases, ignored_modules, ignored_files, ignored_test_files,
             manual_imports, manual_dependencies, manual_data_dependencies, manual_tags, manual_sizes, manual_timeouts,
             manual_flaky, pattern_deps, header, footer, third_party_modules, allow_scoped_imports,
-            generate_library_targets, generate_test_targets, generate_shared_library, enable_debug):
+            generate_library_targets, generate_test_targets, generate_shared_library, generate_test_suite_target,
+            enable_debug):
         self.workspace_dir = workspace_dir
         self.module_aliases = module_aliases
         self.ignored_modules = ignored_modules
@@ -566,6 +578,7 @@ class Config:
         self.generate_library_targets = generate_library_targets
         self.generate_test_targets = generate_test_targets
         self.generate_shared_library = generate_shared_library
+        self.generate_test_suite_target = generate_test_suite_target
         self.enable_debug = enable_debug
 
     @classmethod
@@ -629,6 +642,7 @@ class Config:
                 cascaded_config["generate_library_targets"],
                 cascaded_config["generate_test_targets"],
                 cascaded_config["generate_shared_library"],
+                cascaded_config["generate_test_suite_target"],
                 cascaded_config["enable_debug"])
 
     @classmethod
@@ -650,6 +664,7 @@ class Config:
         dest["generate_library_targets"] = src.get("generate_library_targets", dest["generate_library_targets"])
         dest["generate_test_targets"] = src.get("generate_test_targets", dest["generate_test_targets"])
         dest["generate_shared_library"] = src.get("generate_shared_library", dest["generate_shared_library"])
+        dest["generate_test_suite_target"] = src.get("generate_test_suite_target", dest["generate_test_suite_target"])
         dest["enable_debug"] = src.get("enable_debug", dest["enable_debug"])
 
         # properties that aren't modified
@@ -852,16 +867,17 @@ class BazelBuildTemplate:
     _logger = logging.getLogger(__name__)
 
     def __init__(self):
-        self.packages = [SkylarkPackageStatement("default_visibility", ["//visibility:public"])]
+        self.packages = [StarlarkPackageStatement("default_visibility", ["//visibility:public"])]
         self.loads = {}
         self.libraries = []
         self.tests = []
+        self.test_suites = []
         self.header = None
         self.footer = None
 
     def add_package_stmt(self, property, value):
         # type: (str, Any) -> None
-        self.packages.append(SkylarkPackageStatement(property, value))
+        self.packages.append(StarlarkPackageStatement(property, value))
 
     def add_load_stmt(self, module, macro):
         # type: (str, str) -> None
@@ -869,7 +885,7 @@ class BazelBuildTemplate:
         Adds a 'load' statement to the generated BUILD file.
         """
         if module not in self.loads:
-            self.loads[module] = SkylarkLoadStatement(module)
+            self.loads[module] = StarlarkLoadStatement(module)
         self.loads[module].macros.add(macro)
 
     def add_library(self, name, srcs=[], deps=[], data=[], tags=[], pythonroot="//"):
@@ -885,6 +901,13 @@ class BazelBuildTemplate:
         Adds a 'pyz_test' target to the generated BUILD file.
         """
         self.tests.append(PyzTestTarget(name, srcs, deps, data, tags, size, timeout, flaky, pythonroot, interpreter_path))
+
+    def add_test_suite(self, name, tags=[], tests=[]):
+        # type: (str, list[str], list[str]) -> None
+        """
+        Adds a 'test_suite' target to the generated BUILD file.
+        """
+        self.test_suites.append(TestSuiteTarget(name, tags, tests))
 
     def add_header(self, header):
         # type: (str) -> None
@@ -925,7 +948,10 @@ class BazelBuildTemplate:
     {%- include "pyz_test" %}
 
 {% endfor %}
+{% for test_suite in this.test_suites %}
+    {%- include "test_suite" %}
 
+{% endfor %}
 {% if this.footer %}
 {{ this.footer }}
 {% endif %}
@@ -979,20 +1005,31 @@ pyz_test(
     interpreter_path = {{ test.interpreter_path|tojson }},
 {% endif %}
 )
-"""
+""",
+            "test_suite": """\
+test_suite(
+    name = {{ test_suite.name|tojson }}
+{% if test_suite.tags %}
+    , tags = {{ test_suite.tags|tojson }}
+{% endif %}
+{% if test_suite.tests %}
+    , tests = {{ test_suite.tests|tojson }}
+{% endif %}
+)
+""",
         })
         env = jinja2.Environment(loader=loader)
         template = env.get_template("BUILD")
         return template.render(this=self)
 
 
-class SkylarkPackageStatement:
+class StarlarkPackageStatement:
     def __init__(self, property, value):
         self.property = property
         self.value = value
 
 
-class SkylarkLoadStatement:
+class StarlarkLoadStatement:
     def __init__(self, module, macros=set()):
         self.module = module
         self.macros = macros
@@ -1020,6 +1057,13 @@ class PyzTestTarget:
         self.flaky = flaky
         self.pythonroot = pythonroot
         self.interpreter_path = interpreter_path
+
+
+class TestSuiteTarget:
+    def __init__(self, name, tags, tests):
+        self.name = name
+        self.tags = tags
+        self.tests = tests
 
 
 def to_safe_target_name(s):
