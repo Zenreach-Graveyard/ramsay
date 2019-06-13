@@ -1,4 +1,7 @@
 Jinja2==2.10.1
 MarkupSafe==1.1.1
+pypi-get==2019.4.13
+requirements-parser==0.2.0
 ruamel.yaml==0.15.89
+semantic_version==2.6.0
 yapf==0.26.0

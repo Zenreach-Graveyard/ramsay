@@ -1,7 +1,6 @@
 #!/usr/bin/env python2
 import argparse
 import ast
-import imp
 import jinja2
 import logging
 import operator
