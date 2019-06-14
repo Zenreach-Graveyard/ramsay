@@ -195,13 +195,18 @@ class Pydgeon:
         for platform in self.platforms:
             platform_binary_package = self._select_platform_binary_package(release, matched_version, platform)
             platform_source_package = self._select_platform_source_package(release, matched_version, platform)
-            if platform_binary_package is None and platform_source_package is None:
-                raise PackageNotFound(requirement.name, matched_version, platform)
             platform_packages[platform["name"]] = {
-                "bdist": platform_binary_package,
-                "source": platform_source_package,
+                "bdist": None,
+                "source": None,
             }
-        print(json.dumps(platform_packages, indent=4))
+            if platform_binary_package is not None:
+                platform_packages[platform["name"]]["bdist"] = platform_binary_package
+                continue
+            if platform_source_package is not None:
+                platform_packages[platform["name"]]["source"] = platform_source_package
+                continue
+            raise PackageNotFound(requirement.name, matched_version, platform)
+        # print(json.dumps(platform_packages, indent=4))
         dependencies = pypi_info["info"]["requires_dist"] or []
         return (platform_packages, dependencies)
 
@@ -232,6 +237,7 @@ class Pydgeon:
             matches_os_name = False
             for os_name in platform["os_names"]:
                 if os_name in package["filename"]:
+                    package["os_name"] = os_name
                     matches_os_name = True
                     break
             if not matches_os_name:
@@ -239,6 +245,7 @@ class Pydgeon:
             matches_architecture = False
             for architecture in platform["architectures"]:
                 if architecture in package["filename"]:
+                    package["architecture"] = architecture
                     matches_architecture = True
             if not matches_architecture:
                 continue
@@ -250,6 +257,16 @@ class Pydgeon:
                 continue
             packages.append(package)
         if len(packages) > 0:
+            def compare_package(lhs, rhs):
+                lhs_python_build_prio = 0
+                rhs_python_build_prio = 0
+                for python_version in platform["bdist"]["python_versions"]:
+                    if python_version not in rhs["filename"]:
+                        rhs_python_build_prio += 1
+                    if python_version not in lhs["filename"]:
+                        lhs_python_build_prio += 1
+                return lhs_python_build_prio - rhs_python_build_prio
+            packages.sort(cmp=compare_package)
             return packages[0]
         else:
             return None
